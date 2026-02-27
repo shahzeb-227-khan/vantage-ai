@@ -241,7 +241,3 @@ vantage/
 - 🧪 **Personalized baselines** — model adapts to individual behavioral patterns
 
 ---
-
-## 📄 License
-
-MIT License — see `LICENSE` for details.
