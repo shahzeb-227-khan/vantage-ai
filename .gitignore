@@ -5,6 +5,7 @@ build/
 dist/
 wheels/
 *.egg-info
+.streamlit/secrets.toml
 
 # Virtual environments
 .venv

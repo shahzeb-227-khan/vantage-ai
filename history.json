@@ -1,0 +1,22 @@
+[
+  {
+    "timestamp": "2026-02-28 17:37:12",
+    "duration_s": 39.4,
+    "avg_confidence": 70.0,
+    "max_confidence": 94.3,
+    "min_confidence": 29.3,
+    "pct_above_75": 46.8,
+    "pct_below_50": 12.5,
+    "frame_count": 361
+  },
+  {
+    "timestamp": "2026-02-28 17:37:44",
+    "duration_s": 5.3,
+    "avg_confidence": 81.8,
+    "max_confidence": 85.0,
+    "min_confidence": 67.5,
+    "pct_above_75": 84.6,
+    "pct_below_50": 0.0,
+    "frame_count": 13
+  }
+]

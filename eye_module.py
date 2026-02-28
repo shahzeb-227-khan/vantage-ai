@@ -66,6 +66,7 @@ class GazeTracker:
         self._baseline_left:  np.ndarray | None = None
         self._baseline_right: np.ndarray | None = None
         self._score: float = 100.0
+        self._last_face_landmarks = None   # exposed for engagement module
 
         _ensure_model()
         options = mp_vision.FaceLandmarkerOptions(
@@ -95,9 +96,15 @@ class GazeTracker:
     def score(self) -> float:
         return self._score
 
+    @property
+    def last_face_landmarks(self):
+        """Raw face_landmarks list from last detection (for engagement module)."""
+        return self._last_face_landmarks
+
     def process(self, mp_image: mp.Image, timestamp_ms: int, w: int, h: int) -> float:
         """Run detection and update score. Returns current score 0–100."""
         result = self._detector.detect_for_video(mp_image, timestamp_ms)
+        self._last_face_landmarks = result.face_landmarks  # cache for engagement module
 
         if result.face_landmarks:
             for landmarks in result.face_landmarks:

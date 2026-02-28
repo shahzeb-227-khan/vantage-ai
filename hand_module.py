@@ -124,6 +124,11 @@ class GestureFirmness:
         return self._score
 
     @property
+    def last_hand_result(self):
+        """Raw HandLandmarker result from last detection (for engagement module)."""
+        return self._last_result
+
+    @property
     def hand_visible(self) -> bool:
         return self._hand_visible
 
