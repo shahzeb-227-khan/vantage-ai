@@ -1,19 +1,20 @@
 """
-app.py — Vantage Streamlit Dashboard
+app.py — Vantage Streamlit Dashboard.
 
-Run with:  streamlit run app.py
+Run with::
 
-Performance notes
-─────────────────
-• @st.fragment(run_every=100 ms) isolates the live feed — the rest of the
-  page never re-renders during analysis.
-• SVG arc gauge replaces Plotly — < 1 KB per frame.
-• Frames downscaled to 480 px wide + JPEG-encoded before transfer.
-• Engine + SessionManager persist in st.session_state across fragment ticks.
+    streamlit run app.py
+
+Performance notes:
+    - @st.fragment(run_every=100 ms) isolates the live feed.
+    - SVG arc gauge replaces Plotly (< 1 KB per frame).
+    - Frames downscaled to 480 px wide + JPEG-encoded before transfer.
+    - Engine + SessionManager persist in st.session_state across fragment ticks.
 """
 
+import base64
+import io
 import math
-import os
 import time
 from datetime import timedelta
 
@@ -21,19 +22,15 @@ import numpy as np
 import streamlit as st
 from PIL import Image
 
-from session_manager import SessionManager, generate_tips
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Cloud vs Local detection
-# ─────────────────────────────────────────────────────────────────────────────
-# Streamlit Cloud containers mount the repo at /mount/src/<repo-name>.
-IS_CLOUD = os.path.exists("/mount/src")
+from core.session_manager import SessionManager, generate_tips
+from utils.config import IS_CLOUD
 
 if IS_CLOUD:
-    from frame_analyzer import FrameAnalyzer
+    from vision.frame_analyzer import FrameAnalyzer
 else:
     import cv2
-    from confidence_engine import ConfidenceEngine
+    from core.camera_manager import CameraManager
+    from core.confidence_engine import ConfidenceEngine
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page config
@@ -213,47 +210,50 @@ p { line-height: 1.65; }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Session-state initialisation  (unchanged)
+# Session-state initialisation
 # ─────────────────────────────────────────────────────────────────────────────
 _DEFAULTS = dict(
     page="landing",
     engine=None,
+    camera=None,
     analyzer=None,
     last_cloud_result=None,
     session_mgr=None,
     live_running=False,
     last_summary=None,
     session_start=None,
-    # Timestamp of the last engine.stop() call.  Used to enforce a minimum
-    # delay before re-opening the camera — Windows DirectShow keeps the
-    # device locked for ~500-1500 ms after cap.release(), so attempting to
-    # reopen too quickly causes "camera already in use" errors.
-    engine_stop_time=0.0,
 )
 for _k, _v in _DEFAULTS.items():
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
 
-def goto(page: str):
+def goto(page: str) -> None:
+    """Navigate to a different page."""
     st.session_state.page = page
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# UI helpers  (logic identical, HTML polished)
+# UI helpers
 # ─────────────────────────────────────────────────────────────────────────────
 def _score_color_hex(score: float) -> str:
-    if score >= 85: return "#22d47e"
-    if score >= 70: return "#1abc6a"
-    if score >= 55: return "#f0b429"
-    if score >= 40: return "#f06a30"
+    """Return a hex colour string for a 0-100 confidence score."""
+    if score >= 85:
+        return "#22d47e"
+    if score >= 70:
+        return "#1abc6a"
+    if score >= 55:
+        return "#f0b429"
+    if score >= 40:
+        return "#f06a30"
     return "#e84040"
 
 
 def _signal_bar(label: str, score: float, muted: bool = False) -> str:
+    """Return an HTML snippet for a single signal progress bar."""
     color = "#28283e" if muted else _score_color_hex(score)
-    pct   = 0 if muted else int(score)
-    val   = "MUTED" if muted else f"{pct}%"
+    pct = 0 if muted else int(score)
+    val = "MUTED" if muted else f"{pct}%"
     val_color = "#38385a" if muted else color
     return (
         f'<div class="sig-wrap">'
@@ -268,7 +268,7 @@ def _signal_bar(label: str, score: float, muted: bool = False) -> str:
 
 
 def _svg_gauge(score: float, state: str) -> str:
-    """Lightweight SVG semicircular gauge."""
+    """Return an SVG semicircular gauge as an HTML string."""
     color = _score_color_hex(score)
     cx, cy, r, sw = 130, 118, 96, 13
     sx, sy = cx - r, cy
@@ -286,7 +286,7 @@ def _svg_gauge(score: float, state: str) -> str:
             f'stroke-width="{sw}" stroke-linecap="round"/>'
         )
     else:
-        a  = math.pi * (1 - sc / 100)
+        a = math.pi * (1 - sc / 100)
         fx = cx + r * math.cos(a)
         fy = cy - r * math.sin(a)
         la = 1 if sc > 50 else 0
@@ -299,22 +299,17 @@ def _svg_gauge(score: float, state: str) -> str:
         f'<div style="text-align:center;padding:4px 0">'
         f'<svg viewBox="0 0 260 148" width="100%"'
         f' style="max-width:300px;display:block;margin:0 auto">'
-        # Outer glow ring
         f'<path d="{bg}" fill="none" stroke="#18182a" '
         f'stroke-width="{sw + 5}" stroke-linecap="round"/>'
-        # Background ring
         f'<path d="{bg}" fill="none" stroke="#1e1e30" '
         f'stroke-width="{sw}" stroke-linecap="round"/>'
-        # Filled arc
         f'{fill}'
-        # Score number
         f'<text x="{cx}" y="{cy - 6}" text-anchor="middle" '
         f'font-size="44" font-weight="800" fill="{color}" '
         f'font-family="Inter,sans-serif" letter-spacing="-2">{int(score)}</text>'
         f'<text x="{cx + 30}" y="{cy - 9}" text-anchor="start" '
         f'font-size="17" font-weight="600" fill="{color}" opacity="0.6" '
         f'font-family="Inter,sans-serif">%</text>'
-        # State label
         f'<text x="{cx}" y="{cy + 19}" text-anchor="middle" '
         f'font-size="12" font-weight="700" fill="{color}" opacity="0.75" '
         f'font-family="Inter,sans-serif" letter-spacing="1.5">'
@@ -326,7 +321,8 @@ def _svg_gauge(score: float, state: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # Page 1 — Landing
 # ─────────────────────────────────────────────────────────────────────────────
-def page_landing():
+def page_landing() -> None:
+    """Render the landing / home page."""
     _, center, _ = st.columns([1, 2, 1])
     with center:
         st.markdown("""
@@ -359,13 +355,13 @@ def page_landing():
         </div>
         """, unsafe_allow_html=True)
 
-        if st.button("Start Session", use_container_width=True, type="primary"):
+        if st.button("Start Session", type="primary", width="stretch", key="btn_start"):
             goto("live")
             st.rerun()
 
         st.markdown('<div style="height:8px"></div>', unsafe_allow_html=True)
 
-        if st.button("View Past Sessions", use_container_width=True):
+        if st.button("View Past Sessions", width="stretch", key="btn_history_landing"):
             goto("history")
             st.rerun()
 
@@ -380,43 +376,49 @@ def page_landing():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Page 2 — Live Analysis  (all logic unchanged)
+# Page 2 — Live Analysis
 # ─────────────────────────────────────────────────────────────────────────────
-def _end_session():
-    mgr    = st.session_state.get("session_mgr")
+def _end_session() -> None:
+    """End a local (camera-based) live session."""
+    mgr = st.session_state.get("session_mgr")
     engine = st.session_state.get("engine")
     st.session_state.live_running = False
     summary = mgr.end_session() if mgr else None
     if engine:
         engine.stop()
-        # Record the moment the camera was released so page_live() can
-        # enforce a re-open delay on the next session.
-        st.session_state.engine_stop_time = time.time()
-    st.session_state.engine       = None
-    st.session_state.session_mgr  = None
+    # Camera stays alive (singleton) — only the engine is disposed.
+    st.session_state.engine = None
+    st.session_state.session_mgr = None
     st.session_state.last_summary = summary
     goto("summary")
     st.rerun()
 
 
-def _end_session_cloud():
-    """End session on Streamlit Cloud — close FrameAnalyzer, persist summary."""
-    mgr      = st.session_state.get("session_mgr")
+def _end_session_cloud() -> None:
+    """End a cloud (snapshot-based) live session."""
+    mgr = st.session_state.get("session_mgr")
     analyzer = st.session_state.get("analyzer")
     st.session_state.live_running = False
     summary = mgr.end_session() if mgr else None
     if analyzer:
         analyzer.close()
-    st.session_state.analyzer          = None
-    st.session_state.session_mgr       = None
-    st.session_state.last_summary      = summary
+    st.session_state.analyzer = None
+    st.session_state.session_mgr = None
+    st.session_state.last_summary = summary
     st.session_state.last_cloud_result = None
     goto("summary")
     st.rerun()
 
 
-@st.fragment(run_every=timedelta(milliseconds=100))
-def _live_fragment():
+@st.fragment(run_every=timedelta(milliseconds=200))
+def _live_fragment() -> None:
+    """Fragment that renders the live camera feed and analysis panel.
+
+    Everything is emitted as a **single** st.markdown() call using a CSS-grid
+    layout.  This avoids creating multiple DOM elements per tick, which is what
+    causes the blinking/flashing that plagued the earlier st.image / st.columns
+    approach.
+    """
     engine = st.session_state.get("engine")
     if not engine or not st.session_state.get("live_running"):
         return
@@ -433,115 +435,147 @@ def _live_fragment():
     if mgr:
         mgr.record(result)
 
-    left, right = st.columns([3, 2], gap="large")
+    # ── encode frame ──────────────────────────────────────────────────────
+    frame = result["frame"]
+    fh, fw = frame.shape[:2]
+    if fw > 480:
+        scale = 480 / fw
+        frame = cv2.resize(
+            frame, (480, int(fh * scale)), interpolation=cv2.INTER_AREA
+        )
+    frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(frame_rgb)
+    buf = io.BytesIO()
+    pil_img.save(buf, format="JPEG", quality=80)
+    b64 = base64.b64encode(buf.getvalue()).decode()
 
-    with left:
-        frame = result["frame"]
-        fh, fw = frame.shape[:2]
-        if fw > 480:
-            scale = 480 / fw
-            frame = cv2.resize(
-                frame, (480, int(fh * scale)), interpolation=cv2.INTER_AREA
-            )
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        st.image(frame_rgb, channels="RGB", use_container_width=True, output_format="JPEG")
+    elapsed = int(
+        time.time() - (st.session_state.get("session_start") or time.time())
+    )
+    m, s = divmod(elapsed, 60)
 
-        elapsed = int(time.time() - (st.session_state.get("session_start") or time.time()))
-        m, s = divmod(elapsed, 60)
-        st.markdown(
-            f'<div style="display:flex;gap:14px;padding:6px 2px;'
-            f'font-size:0.76rem;font-weight:500;color:#2e2e4a">'
-            f'<span>⏱ {m:02d}:{s:02d}</span>'
-            f'<span style="color:#1a1a2e">|</span>'
-            f'<span>{int(result["fps"])} fps</span>'
-            f'</div>',
-            unsafe_allow_html=True,
+    left_html = (
+        f'<img src="data:image/jpeg;base64,{b64}" '
+        f'style="width:100%;border-radius:10px;display:block" />'
+        f'<div style="display:flex;gap:14px;padding:6px 2px;'
+        f'font-size:0.76rem;font-weight:500;color:#2e2e4a">'
+        f'<span>⏱ {m:02d}:{s:02d}</span>'
+        f'<span style="color:#1a1a2e">|</span>'
+        f'<span>{int(result["fps"])} fps</span>'
+        f'</div>'
+    )
+
+    # ── build analysis panel html ─────────────────────────────────────────
+    if result["is_calibrated"]:
+        conf = result["confidence"]
+        gauge = _svg_gauge(conf, result["state"])
+
+        tc = {"↑": "#22d47e", "↓": "#e84040", "→": "#f0b429"}.get(
+            result["trend"], "#888"
+        )
+        trend_html = (
+            f'<div style="display:flex;align-items:center;'
+            f'justify-content:space-between;margin-bottom:14px">'
+            f'<div class="vt-section-label">Signal Breakdown</div>'
+            f'<div class="vt-trend" style="color:{tc}">'
+            f'{result["trend"]}&nbsp; {int(result["avg5"])}%</div>'
+            f'</div>'
         )
 
-    with right:
-        if result["is_calibrated"]:
-            conf = result["confidence"]
-            st.markdown(_svg_gauge(conf, result["state"]), unsafe_allow_html=True)
-            st.markdown('<div style="height:4px"></div>', unsafe_allow_html=True)
-
-            tc = {"↑": "#22d47e", "↓": "#e84040", "→": "#f0b429"}.get(
-                result["trend"], "#888"
+        sp = result["speech_score"]
+        bars = (
+            _signal_bar("Gaze", result["eye_score"])
+            + _signal_bar(
+                "Speech", sp if sp is not None else 0, muted=(sp is None)
             )
-            st.markdown(
-                f'<div style="display:flex;align-items:center;'
-                f'justify-content:space-between;margin-bottom:14px">'
-                f'<div class="vt-section-label">Signal Breakdown</div>'
-                f'<div class="vt-trend" style="color:{tc}">'
-                f'{result["trend"]}&nbsp; {int(result["avg5"])}%</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+            + _signal_bar("Hands", result["hand_score"])
+            + _signal_bar("Presence", result["engagement_score"])
+        )
 
-            sp = result["speech_score"]
-            st.markdown(
-                _signal_bar("Gaze",     result["eye_score"])
-                + _signal_bar("Speech", sp if sp is not None else 0, muted=(sp is None))
-                + _signal_bar("Hands",  result["hand_score"])
-                + _signal_bar("Presence", result["engagement_score"]),
-                unsafe_allow_html=True,
+        insight_html = ""
+        if result["insight"]:
+            insight_html = (
+                f'<div class="vt-insight">'
+                f'<div class="vt-insight-dot"></div>'
+                f'{result["insight"]}</div>'
             )
 
-            if result["insight"]:
-                st.markdown(
-                    f'<div class="vt-insight">'
-                    f'<div class="vt-insight-dot"></div>'
-                    f'{result["insight"]}</div>',
-                    unsafe_allow_html=True,
-                )
+        right_html = (
+            gauge
+            + '<div style="height:4px"></div>'
+            + trend_html
+            + bars
+            + insight_html
+        )
+    else:
+        pct = int(result["calibration_pct"] * 100)
+        right_html = (
+            f'<div style="padding:52px 0;text-align:center">'
+            f'<div style="font-size:0.68rem;font-weight:700;letter-spacing:2px;'
+            f'text-transform:uppercase;color:#2e2e50;margin-bottom:16px">'
+            f'Calibrating</div>'
+            f'<div style="font-size:2.2rem;font-weight:800;color:#5050a0;'
+            f'letter-spacing:-1px">{pct}%</div>'
+            f'<div class="vt-calib-track" style="max-width:180px;'
+            f'margin:14px auto 8px">'
+            f'<div class="vt-calib-fill" style="width:{pct}%"></div></div>'
+            f'<p style="font-size:0.76rem;color:#28284a;margin-top:8px">'
+            f'Hold still — establishing baseline</p>'
+            f'</div>'
+        )
 
-        else:
-            pct = int(result["calibration_pct"] * 100)
-            st.markdown(
-                f'<div style="padding:52px 0;text-align:center">'
-                f'<div style="font-size:0.68rem;font-weight:700;letter-spacing:2px;'
-                f'text-transform:uppercase;color:#2e2e50;margin-bottom:16px">Calibrating</div>'
-                f'<div style="font-size:2.2rem;font-weight:800;color:#5050a0;'
-                f'letter-spacing:-1px">{pct}%</div>'
-                f'<div class="vt-calib-track" style="max-width:180px;margin:14px auto 8px">'
-                f'<div class="vt-calib-fill" style="width:{pct}%"></div></div>'
-                f'<p style="font-size:0.76rem;color:#28284a;margin-top:8px">'
-                f'Hold still — establishing baseline</p>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
+    # ── single DOM update ─────────────────────────────────────────────────
+    full_html = (
+        '<div style="display:grid;grid-template-columns:3fr 2fr;gap:28px;'
+        'align-items:start">'
+        f'<div>{left_html}</div>'
+        f'<div>{right_html}</div>'
+        '</div>'
+    )
+    st.markdown(full_html, unsafe_allow_html=True)
 
 
-def page_live():
+def page_live() -> None:
+    """Render the local camera-based live analysis page."""
     if st.session_state.engine is None:
-        # Enforce a minimum 1.8 s gap since the last engine stop so that
-        # Windows DirectShow has time to release the camera device fully.
-        # Without this, rapid stop → start produces "camera already in use".
-        _CAM_RELEASE_GRACE = 1.8
-        elapsed_since_stop = time.time() - st.session_state.engine_stop_time
-        if elapsed_since_stop < _CAM_RELEASE_GRACE:
-            wait_remaining = _CAM_RELEASE_GRACE - elapsed_since_stop
-            st.markdown(
-                f'<p style="color:#28284a;font-size:0.82rem;padding:8px 0">'
-                f'Releasing camera…</p>',
-                unsafe_allow_html=True,
-            )
-            time.sleep(wait_remaining)
-            st.rerun()
-            return
+        # --- Singleton camera ------------------------------------------
+        cam = st.session_state.get("camera")
+        if cam is None:
+            cam = CameraManager.get_instance()
+            st.session_state.camera = cam
 
-        with st.spinner("Starting camera…"):
-            engine = ConfidenceEngine()
-            ok = engine.start()
+        if not cam.is_running:
+            with st.spinner("Starting camera…"):
+                ok = cam.start()
+            if not ok:
+                st.error(
+                    f"Cannot open camera: {cam.open_error or 'unknown error'}. "
+                    "Make sure it isn't used by another app."
+                )
+                col_retry, col_back, _ = st.columns([1, 1, 3])
+                with col_retry:
+                    if st.button("Retry", width="stretch", type="primary"):
+                        st.rerun()
+                with col_back:
+                    if st.button("← Back", width="stretch"):
+                        goto("landing")
+                        st.rerun()
+                return
+
+        # --- Engine (new each session) ---------------------------------
+        engine = ConfidenceEngine(cam)
+        ok = engine.start()
         if not ok:
-            st.error("Cannot open camera. Make sure it isn't used by another app.")
+            st.error("Engine failed to produce a frame in time.")
             if st.button("← Back"):
-                goto("landing"); st.rerun()
+                goto("landing")
+                st.rerun()
             return
-        st.session_state.engine        = engine
-        st.session_state.session_mgr   = SessionManager()
+        st.session_state.engine = engine
+        st.session_state.session_mgr = SessionManager()
         st.session_state.session_mgr.start_session()
         st.session_state.session_start = time.time()
-        st.session_state.live_running  = True
+        st.session_state.live_running = True
 
     hdr_l, hdr_r = st.columns([5, 1])
     with hdr_l:
@@ -551,7 +585,7 @@ def page_live():
             unsafe_allow_html=True,
         )
     with hdr_r:
-        if st.button("End Session", type="primary", use_container_width=True):
+        if st.button("End Session", type="primary", width="stretch"):
             _end_session()
             return
 
@@ -562,8 +596,8 @@ def page_live():
 # ─────────────────────────────────────────────────────────────────────────────
 # Page 2b — Live Analysis (Cloud — snapshot via st.camera_input)
 # ─────────────────────────────────────────────────────────────────────────────
-def _render_analysis_panel(result: dict):
-    """Shared right-column rendering used by both local and cloud live pages."""
+def _render_analysis_panel(result: dict) -> None:
+    """Shared right-column rendering for both local and cloud live pages."""
     if result["is_calibrated"]:
         conf = result["confidence"]
         st.markdown(_svg_gauge(conf, result["state"]), unsafe_allow_html=True)
@@ -584,9 +618,11 @@ def _render_analysis_panel(result: dict):
 
         sp = result["speech_score"]
         st.markdown(
-            _signal_bar("Gaze",     result["eye_score"])
-            + _signal_bar("Speech", sp if sp is not None else 0, muted=(sp is None))
-            + _signal_bar("Hands",  result["hand_score"])
+            _signal_bar("Gaze", result["eye_score"])
+            + _signal_bar(
+                "Speech", sp if sp is not None else 0, muted=(sp is None)
+            )
+            + _signal_bar("Hands", result["hand_score"])
             + _signal_bar("Presence", result["engagement_score"]),
             unsafe_allow_html=True,
         )
@@ -603,10 +639,12 @@ def _render_analysis_panel(result: dict):
         st.markdown(
             f'<div style="padding:52px 0;text-align:center">'
             f'<div style="font-size:0.68rem;font-weight:700;letter-spacing:2px;'
-            f'text-transform:uppercase;color:#2e2e50;margin-bottom:16px">Calibrating</div>'
+            f'text-transform:uppercase;color:#2e2e50;margin-bottom:16px">'
+            f'Calibrating</div>'
             f'<div style="font-size:2.2rem;font-weight:800;color:#5050a0;'
             f'letter-spacing:-1px">{pct}%</div>'
-            f'<div class="vt-calib-track" style="max-width:180px;margin:14px auto 8px">'
+            f'<div class="vt-calib-track" style="max-width:180px;'
+            f'margin:14px auto 8px">'
             f'<div class="vt-calib-fill" style="width:{pct}%"></div></div>'
             f'<p style="font-size:0.76rem;color:#28284a;margin-top:8px">'
             f'Take a few photos to calibrate your gaze baseline</p>'
@@ -615,17 +653,15 @@ def _render_analysis_panel(result: dict):
         )
 
 
-def page_live_cloud():
-    """Snapshot-based live analysis for Streamlit Cloud deployment."""
-    # Initialise analyzer + session on first visit
+def page_live_cloud() -> None:
+    """Render the snapshot-based live analysis page for Streamlit Cloud."""
     if st.session_state.analyzer is None:
-        st.session_state.analyzer      = FrameAnalyzer(calibration_frames=5)
-        st.session_state.session_mgr   = SessionManager()
+        st.session_state.analyzer = FrameAnalyzer(calibration_frames=5)
+        st.session_state.session_mgr = SessionManager()
         st.session_state.session_mgr.start_session()
         st.session_state.session_start = time.time()
-        st.session_state.live_running  = True
+        st.session_state.live_running = True
 
-    # Header
     hdr_l, hdr_r = st.columns([5, 1])
     with hdr_l:
         st.markdown(
@@ -634,7 +670,7 @@ def page_live_cloud():
             unsafe_allow_html=True,
         )
     with hdr_r:
-        if st.button("End Session", type="primary", use_container_width=True):
+        if st.button("End Session", type="primary", width="stretch"):
             _end_session_cloud()
             return
 
@@ -642,7 +678,7 @@ def page_live_cloud():
 
     st.markdown(
         '<p style="font-size:0.78rem;color:#3a3a58;margin-bottom:12px">'
-        '📸 &nbsp;Capture snapshots to analyse your confidence. '
+        'Capture snapshots to analyse your confidence. '
         'Speech analysis is unavailable on cloud.</p>',
         unsafe_allow_html=True,
     )
@@ -653,9 +689,8 @@ def page_live_cloud():
         img = st.camera_input("Capture for analysis", label_visibility="collapsed")
 
         if img is not None:
-            pil_img   = Image.open(img)
+            pil_img = Image.open(img)
             frame_rgb = np.array(pil_img)
-            # Mirror so it matches the user's perspective
             frame_rgb = np.ascontiguousarray(frame_rgb[:, ::-1, :])
 
             result = st.session_state.analyzer.process(frame_rgb)
@@ -665,10 +700,15 @@ def page_live_cloud():
             if mgr:
                 mgr.record(result)
 
-        # Show elapsed time
-        elapsed = int(time.time() - (st.session_state.get("session_start") or time.time()))
+        elapsed = int(
+            time.time() - (st.session_state.get("session_start") or time.time())
+        )
         m, s = divmod(elapsed, 60)
-        snaps = st.session_state.analyzer._frame_count if st.session_state.analyzer else 0
+        snaps = (
+            st.session_state.analyzer._frame_count
+            if st.session_state.analyzer
+            else 0
+        )
         st.markdown(
             f'<div style="display:flex;gap:14px;padding:6px 2px;'
             f'font-size:0.76rem;font-weight:500;color:#2e2e4a">'
@@ -698,14 +738,16 @@ def page_live_cloud():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Page 3 — Summary  (logic unchanged)
+# Page 3 — Summary
 # ─────────────────────────────────────────────────────────────────────────────
-def page_summary():
+def page_summary() -> None:
+    """Render the post-session summary page."""
     summary = st.session_state.last_summary
     if not summary:
         st.warning("No session data found.")
         if st.button("← Home"):
-            goto("landing"); st.rerun()
+            goto("landing")
+            st.rerun()
         return
 
     st.markdown(
@@ -730,12 +772,16 @@ def page_summary():
             unsafe_allow_html=True,
         )
 
-    _stat(c1, "Avg Confidence",  f"{summary['avg_confidence']}%",
-          _score_color_hex(summary["avg_confidence"]))
-    _stat(c2, "Peak",            f"{summary['max_confidence']}%",
-          _score_color_hex(summary["max_confidence"]))
-    _stat(c3, "High Conf Time",  f"{summary['pct_above_75']}%",  "#22d47e")
-    _stat(c4, "Low Conf Time",   f"{summary['pct_below_50']}%",  "#e84040")
+    _stat(
+        c1, "Avg Confidence", f"{summary['avg_confidence']}%",
+        _score_color_hex(summary["avg_confidence"]),
+    )
+    _stat(
+        c2, "Peak", f"{summary['max_confidence']}%",
+        _score_color_hex(summary["max_confidence"]),
+    )
+    _stat(c3, "High Conf Time", f"{summary['pct_above_75']}%", "#22d47e")
+    _stat(c4, "Low Conf Time", f"{summary['pct_below_50']}%", "#e84040")
 
     st.markdown('<div style="height:26px"></div>', unsafe_allow_html=True)
 
@@ -746,22 +792,27 @@ def page_summary():
             unsafe_allow_html=True,
         )
         for tip in tips:
-            st.markdown(f'<div class="vt-tip">{tip}</div>', unsafe_allow_html=True)
+            st.markdown(
+                f'<div class="vt-tip">{tip}</div>', unsafe_allow_html=True
+            )
 
     st.markdown('<div style="height:22px"></div>', unsafe_allow_html=True)
     col_a, col_b, _ = st.columns([1, 1, 2])
     with col_a:
-        if st.button("New Session", use_container_width=True, type="primary"):
-            goto("live"); st.rerun()
+        if st.button("New Session", width="stretch", type="primary"):
+            goto("live")
+            st.rerun()
     with col_b:
-        if st.button("Past Sessions", use_container_width=True):
-            goto("history"); st.rerun()
+        if st.button("Past Sessions", width="stretch"):
+            goto("history")
+            st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Page 4 — History  (logic unchanged)
+# Page 4 — History
 # ─────────────────────────────────────────────────────────────────────────────
-def page_history():
+def page_history() -> None:
+    """Render the session history page."""
     st.markdown(
         '<h2 style="margin:0 0 4px;font-size:1.5rem;font-weight:800;'
         'color:#eeeef8;letter-spacing:-0.5px">Session History</h2>',
@@ -773,38 +824,48 @@ def page_history():
     if not history:
         st.markdown(
             '<p style="color:#28284a;font-size:0.88rem;margin-top:14px">'
-            'No sessions recorded yet — start a live session to build your history.</p>',
+            'No sessions recorded yet — start a live session to build '
+            'your history.</p>',
             unsafe_allow_html=True,
         )
     else:
         st.markdown(
             f'<p style="color:#28284a;font-size:0.76rem;margin-bottom:16px">'
-            f'{len(history)} session{"s" if len(history) != 1 else ""} on record</p>',
+            f'{len(history)} session{"s" if len(history) != 1 else ""} on record'
+            f'</p>',
             unsafe_allow_html=True,
         )
         for i, s in enumerate(history):
             with st.expander(
-                f"{s['timestamp']}  ·  {s['avg_confidence']}% avg  ·  {s['duration_s']}s",
+                f"{s['timestamp']}  ·  {s['avg_confidence']}% avg  "
+                f"·  {s['duration_s']}s",
                 expanded=(i == 0),
             ):
                 cols = st.columns(4, gap="small")
-                cols[0].metric("Avg",    f"{s['avg_confidence']}%")
-                cols[1].metric("Peak",   f"{s['max_confidence']}%")
+                cols[0].metric("Avg", f"{s['avg_confidence']}%")
+                cols[1].metric("Peak", f"{s['max_confidence']}%")
                 cols[2].metric("High %", f"{s['pct_above_75']}%")
-                cols[3].metric("Low %",  f"{s['pct_below_50']}%")
-                st.markdown('<div style="height:6px"></div>', unsafe_allow_html=True)
+                cols[3].metric("Low %", f"{s['pct_below_50']}%")
+                st.markdown(
+                    '<div style="height:6px"></div>', unsafe_allow_html=True
+                )
                 for tip in generate_tips(s):
-                    st.markdown(f'<div class="vt-tip">{tip}</div>', unsafe_allow_html=True)
+                    st.markdown(
+                        f'<div class="vt-tip">{tip}</div>',
+                        unsafe_allow_html=True,
+                    )
 
     st.markdown('<div style="height:22px"></div>', unsafe_allow_html=True)
     if st.button("← Home"):
-        goto("landing"); st.rerun()
+        goto("landing")
+        st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Sidebar  (logic unchanged)
+# Sidebar
 # ─────────────────────────────────────────────────────────────────────────────
-def _sidebar():
+def _sidebar() -> None:
+    """Render the navigation sidebar (hidden during live sessions)."""
     if st.session_state.live_running:
         return
     with st.sidebar:
@@ -815,14 +876,16 @@ def _sidebar():
         )
         st.markdown('<div class="vt-divider"></div>', unsafe_allow_html=True)
         for label, pg in [("Home", "landing"), ("Past Sessions", "history")]:
-            if st.button(label, use_container_width=True):
+            if st.button(label, width="stretch"):
                 if st.session_state.get("engine"):
                     st.session_state.engine.stop()
                     st.session_state.engine = None
+                    st.session_state.live_running = False
                 if st.session_state.get("analyzer"):
                     st.session_state.analyzer.close()
                     st.session_state.analyzer = None
-                goto(pg); st.rerun()
+                goto(pg)
+                st.rerun()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -832,7 +895,7 @@ _sidebar()
 
 _PAGES = {
     "landing": page_landing,
-    "live":    page_live_cloud if IS_CLOUD else page_live,
+    "live": page_live_cloud if IS_CLOUD else page_live,
     "summary": page_summary,
     "history": page_history,
 }

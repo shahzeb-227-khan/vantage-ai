@@ -5,7 +5,15 @@ build/
 dist/
 wheels/
 *.egg-info
-.streamlit/secrets.toml
 
 # Virtual environments
-.venv
+.venv/
+
+# Streamlit
+.streamlit/secrets.toml
+
+# MediaPipe models (auto-downloaded at runtime)
+models/*.task
+
+# Session data
+data/history.json

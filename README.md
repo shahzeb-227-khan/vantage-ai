@@ -2,13 +2,13 @@
 
 ### Multimodal Behavioral Intelligence Platform for Human Readiness Analysis
 
-**VANTAGE** is an AI-powered real-time platform that estimates **human confidence as a behavioral stability construct** — not an emotional or psychological state. By analyzing **gaze steadiness** and **gesture consistency**, VANTAGE computes a live **Behavioral Readiness Index** using interpretable, explainable methods.
+**VANTAGE** is an AI-powered real-time platform that estimates **human confidence as a behavioral stability construct** — not an emotional or psychological state. By analyzing **gaze steadiness**, **speech patterns**, **gesture consistency**, and **face engagement**, VANTAGE computes a live **Behavioral Readiness Index** using interpretable, explainable methods.
 
 Designed for interviews, presentation training, and performance preparation — built with privacy, ethics, and transparency at its core.
 
 ---
 
-## 🚨 Problem Statement
+## Problem Statement
 
 Confidence is critical in communication, leadership, and interviews. Yet existing AI tools fail in three key ways:
 
@@ -19,76 +19,90 @@ Confidence is critical in communication, leadership, and interviews. Yet existin
 Confidence is fundamentally **behavioral**, measurable through:
 - Stability of gaze over time
 - Smoothness and control of physical movement
+- Continuity and decisiveness of speech
 - Absence of nervous, repetitive micro-patterns
 
 There is currently **no lightweight, real-time system** that measures confidence objectively without inferring emotion, personality, or mental state.
 
 ---
 
-## 💡 Solution
+## Solution
 
-VANTAGE introduces a **Multimodal Behavioral Fusion Framework** built on two observable dimensions:
+VANTAGE introduces a **Multimodal Behavioral Fusion Framework** built on four observable dimensions:
 
-| Modality | Signal Measured | Score |
+| Modality | Signal Measured | Weight |
 |---|---|---|
-| 👁 Visual Stability | Iris deviation from neutral gaze baseline | 0 – 100 |
-| ✋ Gesture Firmness | Wrist jerk + sustained tremble detection | 0 – 100 |
+| 👁 Gaze Stability | Iris deviation from neutral baseline | 0.35 |
+| 🎙 Speech Decisiveness | Pause / hesitation detection via RMS energy | 0.30 |
+| ✋ Gesture Firmness | Wrist jerk + sustained tremble detection | 0.20 |
+| 🧠 Face Engagement | Sustained face hiding / occlusion | 0.15 |
 
-These are fused into a single **Behavioral Confidence Index** with a human-readable label: `High / Moderate / Low`.
+These are fused into a single **Behavioral Confidence Index** with a five-tier label: `Commanding / Confident / Moderate / Hesitant / Low Confidence`.
 
----
-
-## ✨ Key Features
-
-- 🎥 Real-time webcam analysis at 25–30 FPS
-- 🧠 Two-phase gaze model: calibration → deviation scoring
-- ✋ Two-layer hand model: instant jerk + sustained tremble detection
-- 📊 Weighted multimodal score fusion
-- ⚡ Fast and lightweight — no GPU required
-- 🧩 Fully modular architecture (`eye_module`, `hand_module`, `fusion`)
-- 🧭 Ethical, non-judgmental design — no emotion or personality labeling
+When the microphone is muted, weights adapt automatically (3-signal mode: 0.50 / 0.30 / 0.20).
 
 ---
 
-## 🏗 System Architecture
+## Key Features
+
+- Real-time webcam analysis at 25–30 FPS
+- Two-phase gaze model: calibration → deviation scoring
+- Two-layer hand model: instant jerk + sustained tremble detection
+- Amplitude-based speech hesitation detection (no speech-to-text)
+- Sustained face-hiding engagement tracker
+- Weighted multimodal score fusion with adaptive mic-mute handling
+- Session recording with JSON persistence and improvement tips
+- Streamlit web dashboard with SVG gauges and live signal bars
+- Cloud deployment support via snapshot-based analysis
+- Fast and lightweight — no GPU required
+- Fully modular architecture with clean separation of concerns
+- Ethical, non-judgmental design — no emotion or personality labeling
+
+---
+
+## System Architecture
 
 ```
-Webcam Feed
-     ↓
-┌────────────────────────────────────────────┐
-│              main.py (orchestrator)         │
-│                                            │
-│   ┌─────────────┐    ┌──────────────────┐  │
-│   │ eye_module  │    │  hand_module     │  │
-│   │             │    │                  │  │
-│   │ Phase 1:    │    │ Layer 1: Instant  │  │
-│   │  Calibrate  │    │   jerk score     │  │
-│   │ Phase 2:    │    │ Layer 2: Sustained│  │
-│   │  Deviation  │    │   tremble detect │  │
-│   └──────┬──────┘    └────────┬─────────┘  │
-│          └────────┬───────────┘            │
-│               fusion.py                    │
-│         Weighted confidence score          │
-└────────────────────────────────────────────┘
-     ↓
-Live HUD overlay on video frame
+Webcam / Mic Feed
+       ↓
+┌──────────────────────────────────────────────────────────────┐
+│                    app.py (Streamlit UI)                      │
+│                                                              │
+│   ┌──────────────────┐                                       │
+│   │ core/             │                                       │
+│   │  camera_manager   │ ← singleton capture thread            │
+│   │  confidence_engine│ ← orchestrates all modules            │
+│   │  session_manager  │ ← records + persists sessions         │
+│   │  engagement_module│ ← face visibility tracking            │
+│   │  fusion           │ ← weighted score combination          │
+│   └──────────────────┘                                       │
+│                                                              │
+│   ┌──────────────────┐  ┌──────────────────┐                 │
+│   │ vision/           │  │ audio/            │                 │
+│   │  eye_module       │  │  speech_module    │                 │
+│   │  hand_module      │  └──────────────────┘                 │
+│   │  frame_analyzer   │                                       │
+│   └──────────────────┘                                       │
+└──────────────────────────────────────────────────────────────┘
+       ↓
+  Live Dashboard + Session History
 ```
 
 ---
 
-## 🔬 How It Works
+## How It Works
 
-### 👁 Visual Stability (`eye_module.py`)
+### 👁 Gaze Stability (`vision/eye_module.py`)
 
-Uses **MediaPipe FaceLandmarker** with iris center landmarks (indices 468 and 473 — the actual eyeball centers, not eyelid contours).
+Uses **MediaPipe FaceLandmarker** with iris center landmarks (indices 468 and 473).
 
 **Phase 1 — Calibration (~2 seconds)**
 
-The user looks at the screen. 60 frames of head-relative iris positions are averaged into a personal neutral gaze baseline. A progress bar is shown on screen during this phase.
+60 frames of head-relative iris positions are averaged into a personal neutral gaze baseline.
 
 **Phase 2 — Deviation Scoring**
 
-Each frame, the iris position is expressed relative to the nose-tip anchor (removes head translation). Euclidean distance from the calibration baseline is mapped to a 0–100 score:
+Each frame, iris position relative to the nose-tip anchor is compared to the baseline:
 
 ```
 distance ≤ 10 px     →  score = 100   (flat tolerance zone)
@@ -96,73 +110,55 @@ distance ≤ 10 px     →  score = 100   (flat tolerance zone)
 distance ≥ 40 px     →  score = 0     (fully looking away)
 ```
 
-Pressing `R` recalibrates the baseline mid-session.
+### 🎙 Speech Decisiveness (`audio/speech_module.py`)
 
----
+Pure amplitude-based analysis — no speech-to-text, no NLP. Monitors microphone RMS energy in real time within a 6-second rolling window:
 
-### ✋ Gesture Firmness (`hand_module.py`)
+- **Continuity ratio** — fraction of window that was active speech
+- **Pause density** — completed pauses per 10-second window
+- **Live silence penalty** — immediate reaction during ongoing pauses
+- **Mic mute detection** — automatically returns `None` when mic is off
+
+### ✋ Gesture Firmness (`vision/hand_module.py`)
 
 Uses **MediaPipe HandLandmarker** to track wrist position each frame.
 
-**Layer 1 — Instant Jerk Score**
+**Layer 1 — Instant Jerk Score**: Dead zone → moving average → exponential falloff. Deliberate-gesture bonus for smooth intentional movement.
+
+**Layer 2 — Sustained Tremble**: Rolling counter over ~5 seconds. Only persistent trembling (>2 s) triggers a penalty, making the system behaviorally intelligent rather than frame-reactive.
+
+### 🧠 Engagement (`core/engagement_module.py`)
+
+Detects face hiding via:
+1. No face detected → occluded
+2. Hand landmark near nose tip → hand-over-face
+
+Only sustained hiding (>2 s) penalises the score. Brief touches are ignored.
+
+### 🔀 Score Fusion (`core/fusion.py`)
 
 ```
-velocity     = distance(wrist_t, wrist_{t-1})
-jerk         = |velocity_t − velocity_{t-1}|
-effective    = max(0, jerk − dead_zone)      ← removes tracking noise
-smoothed     = mean(last 5 frames)            ← prevents spike overreaction
-score        = 100 × exp(−smoothed / 8.0)     ← gradual exponential falloff
+Confidence = 0.35 × eye + 0.30 × speech + 0.20 × hand + 0.15 × engagement
 ```
 
-A deliberate-gesture bonus (+5 pts) is applied when velocity is high but jerk is low, rewarding smooth and intentional movement.
-
-**Layer 2 — Sustained Tremble Detection**
-
-```
-Each frame:
-  jerk > threshold  →  tremble_counter + 1  (max = 150 ≈ 5 seconds at 30 fps)
-  jerk ≤ threshold  →  tremble_counter − 1
-
-tremble_ratio = counter / 150
-
-ratio < 0.40          →  no penalty
-ratio between 0.40–0.70  →  penalty ramps linearly 0 → 45 pts
-ratio ≥ 0.70          →  −45 pts  (persistent trembling)
-```
-
-A **single sudden movement does not lower the score.** Only behavior sustained across multiple seconds is penalized, making the system behaviorally intelligent rather than frame-reactive.
+When mic is muted: `0.50 × eye + 0.30 × hand + 0.20 × engagement`
 
 ---
 
-### 🔀 Score Fusion (`fusion.py`)
-
-```
-Confidence = (0.6 × eye_score + 0.4 × hand_score)
-```
-
-Gaze is weighted more heavily as it is a more stable signal. Both weights are tunable constants.
-
-| Score | Label |
-|---|---|
-| ≥ 80 | High |
-| 55 – 79 | Moderate |
-| < 55 | Low |
-
----
-
-## ⚙️ Tech Stack
+## Tech Stack
 
 | Layer | Technology |
 |---|---|
 | Computer Vision | MediaPipe FaceLandmarker, HandLandmarker |
+| Audio Analysis | sounddevice (RMS energy) |
 | Video Capture | OpenCV |
+| Web UI | Streamlit |
 | Numerical Processing | NumPy |
 | Language | Python 3.10+ |
-| Package Manager | uv |
 
 ---
 
-## 🧭 Ethical & Responsible AI
+## Ethical & Responsible AI
 
 VANTAGE explicitly does **not**:
 - Diagnose psychological or mental health states
@@ -173,71 +169,67 @@ It measures **observable behavioral signals only**, using fully transparent math
 
 ---
 
-## 🚀 Installation & Setup
+## Installation & Setup
 
-**Requirements:** Python 3.10+, a webcam
+**Requirements:** Python 3.10+, a webcam, a microphone (optional)
 
 ```bash
 git clone https://github.com/your-username/vantage.git
 cd vantage
-
-# Using pip
-pip install opencv-python mediapipe numpy requests
-
-# Or using uv (recommended)
-uv sync
+pip install -r requirements.txt
 ```
 
 **Run:**
 
 ```bash
-python main.py
+streamlit run app.py
 ```
 
-MediaPipe models (`face_landmarker.task`, `hand_landmarker.task`) are downloaded automatically on first run (~6 MB total).
-
-**Controls:**
-
-| Key | Action |
-|---|---|
-| `R` | Recalibrate gaze baseline |
-| `ESC` | Exit |
-
-**Camera:** Defaults to index `0` (built-in webcam). Change `CAMERA_INDEX` at the top of `main.py` for external cameras or DroidCam.
+MediaPipe models (`face_landmarker.task`, `hand_landmarker.task`) are downloaded automatically on first run (~6 MB total) into the `models/` directory.
 
 ---
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 vantage/
-├── main.py               ← Orchestration loop and HUD rendering
-├── eye_module.py         ← GazeTracker — calibration + iris deviation scoring
-├── hand_module.py        ← GestureFirmness — jerk + sustained tremble detection
-├── fusion.py             ← Weighted multimodal score fusion
-├── test_camera.py        ← Standalone single-file prototype (reference)
-├── face_landmarker.task  ← MediaPipe face model (auto-downloaded)
-├── hand_landmarker.task  ← MediaPipe hand model (auto-downloaded)
-└── pyproject.toml
+├── app.py                          ← Streamlit entry point & UI
+├── requirements.txt                ← Python dependencies
+├── packages.txt                    ← System packages (Streamlit Cloud)
+├── README.md
+│
+├── core/
+│   ├── camera_manager.py           ← Singleton camera capture thread
+│   ├── confidence_engine.py        ← Background processing engine
+│   ├── engagement_module.py        ← Face visibility tracking
+│   ├── fusion.py                   ← Weighted multimodal score fusion
+│   └── session_manager.py          ← Session recording & persistence
+│
+├── vision/
+│   ├── eye_module.py               ← Gaze stability tracker
+│   ├── hand_module.py              ← Gesture firmness tracker
+│   └── frame_analyzer.py           ← Single-frame cloud analyzer
+│
+├── audio/
+│   └── speech_module.py            ← Speech hesitation detector
+│
+├── models/
+│   ├── face_landmarker.task        ← MediaPipe face model (auto-downloaded)
+│   └── hand_landmarker.task        ← MediaPipe hand model (auto-downloaded)
+│
+├── data/
+│   └── history.json                ← Session history (auto-generated)
+│
+└── utils/
+    └── config.py                   ← Centralized paths & constants
 ```
 
 ---
 
-## 🏆 Hackathon Information
+## Hackathon Information
 
 - **Event:** Dev Season of Code (DSOC) 2026
 - **Theme:** AI / Machine Learning for Social Good
-- **Built during hackathon:** ✅ Yes
-
----
-
-## 🔮 Future Scope
-
-- 🎤 **Audio modality** — speech hesitation, pause structure, filler word detection
-- 🌐 **Web deployment** — FastAPI backend + React dashboard
-- 📱 **Mobile support** — on-device inference via WASM or TFLite
-- 🔒 **Full local processing** — no data ever leaves the device
-- 📈 **Session history** — trend tracking and progress over time
-- 🧪 **Personalized baselines** — model adapts to individual behavioral patterns
+- **Built during hackathon:** Yes
 
 ---
