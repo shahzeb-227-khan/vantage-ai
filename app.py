@@ -13,14 +13,27 @@ Performance notes
 """
 
 import math
+import os
 import time
 from datetime import timedelta
 
-import cv2
+import numpy as np
 import streamlit as st
+from PIL import Image
 
-from confidence_engine import ConfidenceEngine
 from session_manager import SessionManager, generate_tips
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Cloud vs Local detection
+# ─────────────────────────────────────────────────────────────────────────────
+# Streamlit Cloud containers mount the repo at /mount/src/<repo-name>.
+IS_CLOUD = os.path.exists("/mount/src")
+
+if IS_CLOUD:
+    from frame_analyzer import FrameAnalyzer
+else:
+    import cv2
+    from confidence_engine import ConfidenceEngine
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Page config
@@ -205,6 +218,8 @@ p { line-height: 1.65; }
 _DEFAULTS = dict(
     page="landing",
     engine=None,
+    analyzer=None,
+    last_cloud_result=None,
     session_mgr=None,
     live_running=False,
     last_summary=None,
@@ -384,6 +399,22 @@ def _end_session():
     st.rerun()
 
 
+def _end_session_cloud():
+    """End session on Streamlit Cloud — close FrameAnalyzer, persist summary."""
+    mgr      = st.session_state.get("session_mgr")
+    analyzer = st.session_state.get("analyzer")
+    st.session_state.live_running = False
+    summary = mgr.end_session() if mgr else None
+    if analyzer:
+        analyzer.close()
+    st.session_state.analyzer          = None
+    st.session_state.session_mgr       = None
+    st.session_state.last_summary      = summary
+    st.session_state.last_cloud_result = None
+    goto("summary")
+    st.rerun()
+
+
 @st.fragment(run_every=timedelta(milliseconds=100))
 def _live_fragment():
     engine = st.session_state.get("engine")
@@ -529,6 +560,144 @@ def page_live():
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Page 2b — Live Analysis (Cloud — snapshot via st.camera_input)
+# ─────────────────────────────────────────────────────────────────────────────
+def _render_analysis_panel(result: dict):
+    """Shared right-column rendering used by both local and cloud live pages."""
+    if result["is_calibrated"]:
+        conf = result["confidence"]
+        st.markdown(_svg_gauge(conf, result["state"]), unsafe_allow_html=True)
+        st.markdown('<div style="height:4px"></div>', unsafe_allow_html=True)
+
+        tc = {"↑": "#22d47e", "↓": "#e84040", "→": "#f0b429"}.get(
+            result["trend"], "#888"
+        )
+        st.markdown(
+            f'<div style="display:flex;align-items:center;'
+            f'justify-content:space-between;margin-bottom:14px">'
+            f'<div class="vt-section-label">Signal Breakdown</div>'
+            f'<div class="vt-trend" style="color:{tc}">'
+            f'{result["trend"]}&nbsp; {int(result["avg5"])}%</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        sp = result["speech_score"]
+        st.markdown(
+            _signal_bar("Gaze",     result["eye_score"])
+            + _signal_bar("Speech", sp if sp is not None else 0, muted=(sp is None))
+            + _signal_bar("Hands",  result["hand_score"])
+            + _signal_bar("Presence", result["engagement_score"]),
+            unsafe_allow_html=True,
+        )
+
+        if result.get("insight"):
+            st.markdown(
+                f'<div class="vt-insight">'
+                f'<div class="vt-insight-dot"></div>'
+                f'{result["insight"]}</div>',
+                unsafe_allow_html=True,
+            )
+    else:
+        pct = int(result["calibration_pct"] * 100)
+        st.markdown(
+            f'<div style="padding:52px 0;text-align:center">'
+            f'<div style="font-size:0.68rem;font-weight:700;letter-spacing:2px;'
+            f'text-transform:uppercase;color:#2e2e50;margin-bottom:16px">Calibrating</div>'
+            f'<div style="font-size:2.2rem;font-weight:800;color:#5050a0;'
+            f'letter-spacing:-1px">{pct}%</div>'
+            f'<div class="vt-calib-track" style="max-width:180px;margin:14px auto 8px">'
+            f'<div class="vt-calib-fill" style="width:{pct}%"></div></div>'
+            f'<p style="font-size:0.76rem;color:#28284a;margin-top:8px">'
+            f'Take a few photos to calibrate your gaze baseline</p>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+
+def page_live_cloud():
+    """Snapshot-based live analysis for Streamlit Cloud deployment."""
+    # Initialise analyzer + session on first visit
+    if st.session_state.analyzer is None:
+        st.session_state.analyzer      = FrameAnalyzer(calibration_frames=5)
+        st.session_state.session_mgr   = SessionManager()
+        st.session_state.session_mgr.start_session()
+        st.session_state.session_start = time.time()
+        st.session_state.live_running  = True
+
+    # Header
+    hdr_l, hdr_r = st.columns([5, 1])
+    with hdr_l:
+        st.markdown(
+            '<h2 style="margin:0;font-size:1.25rem;font-weight:700;'
+            'color:#9090b8;letter-spacing:-0.3px">Live Session</h2>',
+            unsafe_allow_html=True,
+        )
+    with hdr_r:
+        if st.button("End Session", type="primary", use_container_width=True):
+            _end_session_cloud()
+            return
+
+    st.markdown('<div class="vt-divider"></div>', unsafe_allow_html=True)
+
+    st.markdown(
+        '<p style="font-size:0.78rem;color:#3a3a58;margin-bottom:12px">'
+        '📸 &nbsp;Capture snapshots to analyse your confidence. '
+        'Speech analysis is unavailable on cloud.</p>',
+        unsafe_allow_html=True,
+    )
+
+    left, right = st.columns([3, 2], gap="large")
+
+    with left:
+        img = st.camera_input("Capture for analysis", label_visibility="collapsed")
+
+        if img is not None:
+            pil_img   = Image.open(img)
+            frame_rgb = np.array(pil_img)
+            # Mirror so it matches the user's perspective
+            frame_rgb = np.ascontiguousarray(frame_rgb[:, ::-1, :])
+
+            result = st.session_state.analyzer.process(frame_rgb)
+            st.session_state.last_cloud_result = result
+
+            mgr = st.session_state.get("session_mgr")
+            if mgr:
+                mgr.record(result)
+
+        # Show elapsed time
+        elapsed = int(time.time() - (st.session_state.get("session_start") or time.time()))
+        m, s = divmod(elapsed, 60)
+        snaps = st.session_state.analyzer._frame_count if st.session_state.analyzer else 0
+        st.markdown(
+            f'<div style="display:flex;gap:14px;padding:6px 2px;'
+            f'font-size:0.76rem;font-weight:500;color:#2e2e4a">'
+            f'<span>⏱ {m:02d}:{s:02d}</span>'
+            f'<span style="color:#1a1a2e">|</span>'
+            f'<span>{snaps} snapshot{"s" if snaps != 1 else ""}</span>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+    with right:
+        result = st.session_state.get("last_cloud_result")
+        if result:
+            _render_analysis_panel(result)
+        else:
+            st.markdown(
+                '<div style="padding:52px 0;text-align:center">'
+                '<div style="font-size:0.68rem;font-weight:700;letter-spacing:2px;'
+                'text-transform:uppercase;color:#2e2e50;margin-bottom:16px">'
+                'Ready</div>'
+                '<p style="font-size:0.82rem;color:#3a3a58;max-width:220px;'
+                'margin:0 auto">Take a photo with the camera widget to begin '
+                'your confidence analysis.</p>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Page 3 — Summary  (logic unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
 def page_summary():
@@ -647,9 +816,12 @@ def _sidebar():
         st.markdown('<div class="vt-divider"></div>', unsafe_allow_html=True)
         for label, pg in [("Home", "landing"), ("Past Sessions", "history")]:
             if st.button(label, use_container_width=True):
-                if st.session_state.engine:
+                if st.session_state.get("engine"):
                     st.session_state.engine.stop()
                     st.session_state.engine = None
+                if st.session_state.get("analyzer"):
+                    st.session_state.analyzer.close()
+                    st.session_state.analyzer = None
                 goto(pg); st.rerun()
 
 
@@ -660,7 +832,7 @@ _sidebar()
 
 _PAGES = {
     "landing": page_landing,
-    "live":    page_live,
+    "live":    page_live_cloud if IS_CLOUD else page_live,
     "summary": page_summary,
     "history": page_history,
 }
